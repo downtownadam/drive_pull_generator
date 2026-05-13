@@ -28,10 +28,10 @@ import os
 
 
 def create_pulley_half(
-    pulley_width: float,
+    large_side_width: float,
+    threaded_side_width: float,
     shaft_dia_large: float,
     shaft_dia_threaded: float,
-    threaded_side_width: float,
     valley_diameter: float,
     flange_diameter: float,
     flange_thickness: float = 2.0,
@@ -44,6 +44,8 @@ def create_pulley_half(
     bolt_head_dia: float = 5.5,
     bolt_head_depth: float = 3.2,
     flange_cutout_count: int = 6,
+    build_plate_chamfer: float = 1.0,
+    bore_compensation: float = 0.2,
     is_large_side: bool = True,
 ) -> cq.Workplane:
     """
@@ -51,14 +53,14 @@ def create_pulley_half(
 
     Parameters
     ----------
-    pulley_width : float
-        Total width of the assembled pulley (mm).
+    large_side_width : float
+        Width of the large/keyed side half (mm).
+    threaded_side_width : float
+        Width of the threaded/nut side half (mm).
     shaft_dia_large : float
         Bore diameter on the large/keyed side (mm).
     shaft_dia_threaded : float
         Bore diameter on the threaded/small side (mm).
-    threaded_side_width : float
-        Width of shaft bore on the threaded side (mm).
     valley_diameter : float
         Diameter at the valley floor where string winds (mm).
     flange_diameter : float
@@ -84,18 +86,31 @@ def create_pulley_half(
         Counterbore depth for the bolt head (mm).
     flange_cutout_count : int
         Number of cutout windows in the flange (0 = solid flange).
+    build_plate_chamfer : float
+        Size of the 45-deg chamfer applied to all edges on the build-plate
+        face after orientation (mm). Set to 0 to disable. Helps mask
+        elephant's foot on the first layer.
+    bore_compensation : float
+        Amount added to each bore diameter in the model to offset typical
+        print shrinkage of inner holes (mm). With the default 0.2 mm, a
+        shaft_dia of 8.0 produces a modeled bore of 8.2 mm that should
+        print at ~8.0 mm. Only affects the bore profile, not the bolt
+        circle or pin positions.
     is_large_side : bool
         True = large bore side, False = threaded bore side.
     """
 
     # Derived dimensions
-    large_side_width = pulley_width - threaded_side_width
     half_width = large_side_width if is_large_side else threaded_side_width
     shaft_dia = shaft_dia_large if is_large_side else shaft_dia_threaded
 
     valley_radius = valley_diameter / 2.0
     flange_radius = flange_diameter / 2.0
     shaft_radius = shaft_dia / 2.0
+    # Bore is modeled slightly larger than nominal to compensate for the
+    # typical undersize of printed inner holes. shaft_radius (without
+    # compensation) is still used for the bolt circle / pin positions.
+    bore_radius = (shaft_dia + bore_compensation) / 2.0
 
     # Simple spool profile: solid disc from shaft to valley, thin flange at edge
     # Both halves meet flush at z=0 across the full face.
@@ -104,8 +119,8 @@ def create_pulley_half(
     #   -> D (flange, hw-ft) -> E (valley, hw-ft) -> F (valley, 0)
     #   -> close to A
     profile_points = [
-        (shaft_radius, 0.0),                               # A: bore at split face
-        (shaft_radius, half_width),                         # B: bore at outer face
+        (bore_radius, 0.0),                                 # A: bore at split face
+        (bore_radius, half_width),                          # B: bore at outer face
         (flange_radius, half_width),                        # C: flange OD at outer face
         (flange_radius, half_width - flange_thickness),     # D: flange inner edge
         (valley_radius, half_width - flange_thickness),     # E: valley at flange
@@ -241,14 +256,29 @@ def create_pulley_half(
     # --- Orient for printing: flip so outer face (z=half_width) is at z=0 ---
     result = result.mirror("XY").translate((0, 0, half_width))
 
+    # --- Chamfer build-plate edges to mask elephant's foot ---
+    # Only chamfer closed circular edges (outer perimeter, bore, counterbores).
+    # The cutout-window arcs meet at sharp corners that OCC refuses to chamfer,
+    # and the hex nut pocket wants a sharp socket, not a lead-in.
+    if build_plate_chamfer > 0:
+        circle_edges = []
+        for edge in result.faces("<Z").edges().vals():
+            if edge.geomType() != "CIRCLE":
+                continue
+            s, e = edge.startPoint(), edge.endPoint()
+            if abs(s.x - e.x) + abs(s.y - e.y) + abs(s.z - e.z) < 1e-6:
+                circle_edges.append(edge)
+        if circle_edges:
+            result = result.newObject(circle_edges).chamfer(build_plate_chamfer)
+
     return result
 
 
 def generate_pulley(
-    pulley_width: float = 25.0,
-    shaft_dia_large: float = 12.0,
-    shaft_dia_threaded: float = 8.0,
-    threaded_side_width: float = 8.0,
+    large_side_width: float = 9.0,
+    threaded_side_width: float = 10.9,
+    shaft_dia_large: float = 8.0,
+    shaft_dia_threaded: float = 6.0,
     valley_diameter: float = 125.0,
     flange_diameter: float = 150.0,
     flange_thickness: float = 2.0,
@@ -261,6 +291,8 @@ def generate_pulley(
     bolt_head_dia: float = 5.5,
     bolt_head_depth: float = 3.2,
     flange_cutout_count: int = 6,
+    build_plate_chamfer: float = 1.0,
+    bore_compensation: float = 0.2,
     output_dir: str = "output",
 ):
     """Generate both halves of the pulley and export as STL files."""
@@ -268,11 +300,12 @@ def generate_pulley(
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"Generating drive pulley with parameters:")
-    print(f"  Pulley width:          {pulley_width} mm")
-    print(f"  Shaft dia (large):     {shaft_dia_large} mm")
-    print(f"  Shaft dia (threaded):  {shaft_dia_threaded} mm")
+    print(f"  Large side width:      {large_side_width} mm")
     print(f"  Threaded side width:   {threaded_side_width} mm")
-    print(f"  Large side width:      {pulley_width - threaded_side_width} mm")
+    print(f"  Total pulley width:    {large_side_width + threaded_side_width} mm")
+    print(f"  Shaft dia (large):     {shaft_dia_large} mm (target printed)")
+    print(f"  Shaft dia (threaded):  {shaft_dia_threaded} mm (target printed)")
+    print(f"  Bore compensation:     +{bore_compensation} mm (added to model)")
     print(f"  Valley diameter:       {valley_diameter} mm")
     print(f"  Flange diameter:       {flange_diameter} mm")
     print(f"  Flange thickness:      {flange_thickness} mm")
@@ -291,6 +324,10 @@ def generate_pulley(
     else:
         print(f"  Bolt circle:           disabled")
     print(f"  Flange cutouts:        {flange_cutout_count} (0 = solid flange)")
+    if build_plate_chamfer > 0:
+        print(f"  Build-plate chamfer:   {build_plate_chamfer} mm (45 deg)")
+    else:
+        print(f"  Build-plate chamfer:   disabled")
     print()
 
     # Validation
@@ -298,16 +335,16 @@ def generate_pulley(
         raise ValueError("Valley diameter must be less than flange diameter")
     if shaft_dia_large <= 0 or shaft_dia_threaded <= 0:
         raise ValueError("Shaft diameters must be positive")
-    if threaded_side_width >= pulley_width:
-        raise ValueError("Threaded side width must be less than total pulley width")
+    if large_side_width <= 0 or threaded_side_width <= 0:
+        raise ValueError("Half widths must be positive")
     if valley_diameter <= max(shaft_dia_large, shaft_dia_threaded) + 4:
         raise ValueError("Valley diameter must be larger than shaft diameter + 4mm wall")
 
     common_args = dict(
-        pulley_width=pulley_width,
+        large_side_width=large_side_width,
+        threaded_side_width=threaded_side_width,
         shaft_dia_large=shaft_dia_large,
         shaft_dia_threaded=shaft_dia_threaded,
-        threaded_side_width=threaded_side_width,
         valley_diameter=valley_diameter,
         flange_diameter=flange_diameter,
         flange_thickness=flange_thickness,
@@ -320,6 +357,8 @@ def generate_pulley(
         bolt_head_dia=bolt_head_dia,
         bolt_head_depth=bolt_head_depth,
         flange_cutout_count=flange_cutout_count,
+        build_plate_chamfer=build_plate_chamfer,
+        bore_compensation=bore_compensation,
     )
 
     print("Generating large side half...")
@@ -361,14 +400,14 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    parser.add_argument("--pulley-width", type=float, default=25.0,
-                        help="Total width of the assembled pulley (mm)")
-    parser.add_argument("--shaft-dia-large", type=float, default=12.0,
-                        help="Bore diameter on the large/keyed side (mm)")
-    parser.add_argument("--shaft-dia-threaded", type=float, default=8.0,
-                        help="Bore diameter on the threaded/small side (mm)")
-    parser.add_argument("--threaded-side-width", type=float, default=8.0,
-                        help="Width of shaft bore on the threaded side (mm)")
+    parser.add_argument("--large-side-width", type=float, default=9.0,
+                        help="Width of the large/keyed side half (mm)")
+    parser.add_argument("--threaded-side-width", type=float, default=10.9,
+                        help="Width of the threaded/nut side half (mm)")
+    parser.add_argument("--shaft-dia-large", type=float, default=8.0,
+                        help="Target printed bore diameter on the large/keyed side (mm)")
+    parser.add_argument("--shaft-dia-threaded", type=float, default=6.0,
+                        help="Target printed bore diameter on the threaded/small side (mm)")
     parser.add_argument("--valley-diameter", type=float, default=125.0,
                         help="Diameter at the valley floor (mm)")
     parser.add_argument("--flange-diameter", type=float, default=150.0,
@@ -393,16 +432,20 @@ def main():
                         help="Counterbore depth for bolt head (mm)")
     parser.add_argument("--flange-cutout-count", type=int, default=6,
                         help="Number of cutout windows in the flange (0 = solid)")
+    parser.add_argument("--build-plate-chamfer", type=float, default=1.0,
+                        help="45-deg chamfer size on build-plate edges, 0 to disable (mm)")
+    parser.add_argument("--bore-compensation", type=float, default=0.2,
+                        help="Amount added to bore diameter to offset print shrinkage, 0 to disable (mm)")
     parser.add_argument("--output-dir", type=str, default="output",
                         help="Output directory for STL files")
 
     args = parser.parse_args()
 
     generate_pulley(
-        pulley_width=args.pulley_width,
+        large_side_width=args.large_side_width,
+        threaded_side_width=args.threaded_side_width,
         shaft_dia_large=args.shaft_dia_large,
         shaft_dia_threaded=args.shaft_dia_threaded,
-        threaded_side_width=args.threaded_side_width,
         valley_diameter=args.valley_diameter,
         flange_diameter=args.flange_diameter,
         flange_thickness=args.flange_thickness,
@@ -415,6 +458,8 @@ def main():
         bolt_head_dia=args.bolt_head_dia,
         bolt_head_depth=args.bolt_head_depth,
         flange_cutout_count=args.flange_cutout_count,
+        build_plate_chamfer=args.build_plate_chamfer,
+        bore_compensation=args.bore_compensation,
         output_dir=args.output_dir,
     )
 
