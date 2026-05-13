@@ -53,7 +53,8 @@ python pulley_generator.py \
     --valley-diameter 40 \
     --flange-diameter 60 \
     --groove-angle 38 \
-    --set-screw-dia 3 \
+    --nut-width-af 10 \
+    --nut-thickness 5 \
     --weight-cutouts \
     --cutout-count 6
 ```
@@ -69,7 +70,8 @@ python pulley_generator.py \
 | `--valley-diameter` | 40 mm | Diameter at the bottom of the V-groove |
 | `--flange-diameter` | 60 mm | Outer diameter at the pulley flanges |
 | `--groove-angle` | 38 deg | Included angle of the V-groove |
-| `--set-screw-dia` | 3 mm | Set screw hole diameter (0 to disable) |
+| `--nut-width-af` | 10 mm | Hex nut across-flats width for recess (0 to disable) |
+| `--nut-thickness` | 5 mm | Hex nut thickness for recess (0 to disable) |
 | `--weight-cutouts` | off | Add triangular weight reduction cutouts |
 | `--cutout-count` | 6 | Number of weight reduction cutouts |
 
